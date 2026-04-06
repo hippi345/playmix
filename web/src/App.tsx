@@ -106,6 +106,20 @@ function formatTidalTrackDuration(sec: number | null): string {
   return `${m}:${r.toString().padStart(2, "0")}`
 }
 
+function unifiedPlaylistMatchesQuery(p: UnifiedPlaylist, query: string): boolean {
+  const q = query.trim().toLowerCase()
+  if (!q) return true
+  if (p.name.toLowerCase().includes(q)) return true
+  if (p.service === "tidal" && p.owner?.toLowerCase().includes(q)) return true
+  return false
+}
+
+function spotifyRowIsPlayableTrack(row: PlaylistTrackRow): boolean {
+  const t = row.track ?? row.item
+  if (t?.type && t.type !== "track") return false
+  return true
+}
+
 function spotifyCover(p: MePlaylistItem): string | null {
   return p.images?.find((i) => i.url)?.url ?? null
 }
@@ -142,6 +156,8 @@ export default function App() {
   /** Full-screen playlist + tracks (separate from main grid). */
   const [playlistDetailView, setPlaylistDetailView] = useState(false)
   const [libraryRefreshing, setLibraryRefreshing] = useState(false)
+  const [playlistLibrarySearch, setPlaylistLibrarySearch] = useState("")
+  const [playlistDetailTrackSearch, setPlaylistDetailTrackSearch] = useState("")
 
   const [spotifyPlayback, setSpotifyPlayback] = useState<SpotifyPlaybackState | null>(null)
   /** Set when the user starts a TIDAL playlist from Playmix; cleared when Spotify starts playing. */
@@ -160,6 +176,7 @@ export default function App() {
     setTracksNote(null)
     setTidalDetailTracks([])
     setTidalTracksNote(null)
+    setPlaylistDetailTrackSearch("")
   }, [])
 
   const syncSession = useCallback(async () => {
@@ -522,9 +539,37 @@ export default function App() {
     return [...s, ...td].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }))
   }, [playlists, tidalPlaylists, libraryTab])
 
+  const filteredUnifiedGrid = useMemo(
+    () => unifiedGrid.filter((p) => unifiedPlaylistMatchesQuery(p, playlistLibrarySearch)),
+    [unifiedGrid, playlistLibrarySearch],
+  )
+
+  const spotifyFilteredTrackEntries = useMemo(() => {
+    const q = playlistDetailTrackSearch.trim().toLowerCase()
+    const entries: { row: PlaylistTrackRow; indexInPlaylist: number }[] = []
+    tracks.forEach((row, i) => {
+      if (!spotifyRowIsPlayableTrack(row)) return
+      const text = `${trackRowTitle(row)} ${trackRowArtists(row)}`.toLowerCase()
+      if (q && !text.includes(q)) return
+      entries.push({ row, indexInPlaylist: i })
+    })
+    return entries
+  }, [tracks, playlistDetailTrackSearch])
+
+  const tidalFilteredTrackEntries = useMemo(() => {
+    const q = playlistDetailTrackSearch.trim().toLowerCase()
+    return tidalDetailTracks
+      .map((row, indexInPlaylist) => ({ row, indexInPlaylist }))
+      .filter(({ row }) => {
+        if (!q) return true
+        return `${row.name} ${row.artistLine}`.toLowerCase().includes(q)
+      })
+  }, [tidalDetailTracks, playlistDetailTrackSearch])
+
   const loadSpotifyDetail = async (id: string) => {
     const t = await syncSession()
     if (!t) return
+    setPlaylistDetailTrackSearch("")
     setBusy(true)
     setErr(null)
     setDetailName("")
@@ -572,6 +617,7 @@ export default function App() {
   }
 
   const handleTidalPlaylistActivate = async (p: TidalPlaylistItem) => {
+    setPlaylistDetailTrackSearch("")
     setPlaylistDetailView(true)
     setSelectedSpotifyId(null)
     setSelectedTidal(p)
@@ -868,57 +914,87 @@ export default function App() {
                     </div>
                   </div>
                 </div>
+                {(selectedSpotifyId && tracks.length > 0) || (selectedTidal && tidalDetailTracks.length > 0) ? (
+                  <div className="playlist-detail__track-search">
+                    <label className="playlist-search-label" htmlFor="playlist-detail-track-search">
+                      Search tracks
+                    </label>
+                    <input
+                      id="playlist-detail-track-search"
+                      type="search"
+                      className="playlist-search-input"
+                      placeholder="Filter by title or artist…"
+                      value={playlistDetailTrackSearch}
+                      onChange={(e) => setPlaylistDetailTrackSearch(e.target.value)}
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                  </div>
+                ) : null}
                 {selectedSpotifyId && tracks.length > 0 ? (
-                  <ol className="track-list">
-                    {tracks.map((row, i) => {
-                      const t = row.track ?? row.item
-                      if (t?.type && t.type !== "track") return null
-                      return (
-                        <li key={`${t?.uri ?? t?.id ?? i}`}>
-                          <button
-                            type="button"
-                            className="track-list__row"
-                            onClick={() => void handlePlayTrack(row)}
-                          >
-                            <span className="track-list__idx">{i + 1}</span>
-                            <span className="track-list__main">
-                              <span className="track-list__title">{trackRowTitle(row)}</span>
-                              <span className="track-list__artists">{trackRowArtists(row)}</span>
-                            </span>
-                          </button>
-                        </li>
-                      )
-                    })}
-                  </ol>
+                  <>
+                    {spotifyFilteredTrackEntries.length > 0 ? (
+                      <ol className="track-list">
+                        {spotifyFilteredTrackEntries.map(({ row, indexInPlaylist }) => {
+                          const t = row.track ?? row.item
+                          return (
+                            <li key={`${t?.uri ?? t?.id ?? indexInPlaylist}`}>
+                              <button
+                                type="button"
+                                className="track-list__row"
+                                onClick={() => void handlePlayTrack(row)}
+                              >
+                                <span className="track-list__idx">{indexInPlaylist + 1}</span>
+                                <span className="track-list__main">
+                                  <span className="track-list__title">{trackRowTitle(row)}</span>
+                                  <span className="track-list__artists">{trackRowArtists(row)}</span>
+                                </span>
+                              </button>
+                            </li>
+                          )
+                        })}
+                      </ol>
+                    ) : tracks.some(spotifyRowIsPlayableTrack) && playlistDetailTrackSearch.trim() ? (
+                      <p className="muted playlist-search-empty">No tracks match your search.</p>
+                    ) : null}
+                  </>
                 ) : null}
                 {selectedSpotifyId && tracksNote ? <p className="muted">{tracksNote}</p> : null}
                 {selectedTidal && tidalDetailTracks.length > 0 ? (
-                  <ol className="track-list">
-                    {tidalDetailTracks.map((row, i) => (
-                      <li key={`${row.id}:${i}`}>
-                        <button
-                          type="button"
-                          className="track-list__row"
-                          onClick={() => {
-                            setTidalNowPlaying({
-                              playlistName: selectedTidal.name,
-                              playlistId: selectedTidal.id,
-                            })
-                            openTidalTrack(row.id)
-                          }}
-                        >
-                          <span className="track-list__idx">{i + 1}</span>
-                          <span className="track-list__main">
-                            <span className="track-list__title">{row.name}</span>
-                            <span className="track-list__artists">{row.artistLine}</span>
-                          </span>
-                          {row.durationSec != null ? (
-                            <span className="track-list__dur">{formatTidalTrackDuration(row.durationSec)}</span>
-                          ) : null}
-                        </button>
-                      </li>
-                    ))}
-                  </ol>
+                  <>
+                    {tidalFilteredTrackEntries.length > 0 ? (
+                      <ol className="track-list">
+                        {tidalFilteredTrackEntries.map(({ row, indexInPlaylist }) => (
+                          <li key={`${row.id}:${indexInPlaylist}`}>
+                            <button
+                              type="button"
+                              className="track-list__row"
+                              onClick={() => {
+                                setTidalNowPlaying({
+                                  playlistName: selectedTidal.name,
+                                  playlistId: selectedTidal.id,
+                                })
+                                openTidalTrack(row.id)
+                              }}
+                            >
+                              <span className="track-list__idx">{indexInPlaylist + 1}</span>
+                              <span className="track-list__main">
+                                <span className="track-list__title">{row.name}</span>
+                                <span className="track-list__artists">{row.artistLine}</span>
+                              </span>
+                              {row.durationSec != null ? (
+                                <span className="track-list__dur">
+                                  {formatTidalTrackDuration(row.durationSec)}
+                                </span>
+                              ) : null}
+                            </button>
+                          </li>
+                        ))}
+                      </ol>
+                    ) : playlistDetailTrackSearch.trim() ? (
+                      <p className="muted playlist-search-empty">No tracks match your search.</p>
+                    ) : null}
+                  </>
                 ) : null}
                 {selectedTidal && tidalTracksNote ? <p className="muted">{tidalTracksNote}</p> : null}
               </section>
@@ -983,45 +1059,68 @@ export default function App() {
 
               {unifiedGrid.length > 0 ? (
                 <>
-                  <h2 className="section-title">Playlists</h2>
-                  <div className="playlist-grid">
-                    {unifiedGrid.map((p) => (
-                      <button
-                        key={`${p.service}:${p.id}`}
-                        type="button"
-                        className="playlist-card"
-                        data-service={p.service}
-                        onClick={() => {
-                          if (p.service === "spotify") void handleSpotifyPlaylistActivate(p.id)
-                          else {
-                            const full = tidalPlaylists.find((t) => t.id === p.id)
-                            if (full) void handleTidalPlaylistActivate(full)
-                          }
-                        }}
-                      >
-                        <div className="playlist-card__cover">
-                          {p.service === "spotify" && p.cover ? (
-                            <img src={p.cover} alt="" />
-                          ) : null}
-                          <span
-                            className={
-                              p.service === "spotify"
-                                ? "playlist-card__badge playlist-card__badge--spotify"
-                                : "playlist-card__badge playlist-card__badge--tidal"
-                            }
-                          >
-                            {p.service === "spotify" ? "Spotify" : "TIDAL"}
-                          </span>
-                        </div>
-                        <div className="playlist-card__body">
-                          <div className="playlist-card__name">{p.name}</div>
-                          {p.service === "tidal" ? (
-                            <div className="playlist-card__meta">{p.owner}</div>
-                          ) : null}
-                        </div>
-                      </button>
-                    ))}
+                  <div className="playlist-library-toolbar">
+                    <h2 className="section-title playlist-library-toolbar__title">Playlists</h2>
+                    <div className="playlist-library-toolbar__search">
+                      <label className="playlist-search-label" htmlFor="playlist-library-search">
+                        Search playlists
+                      </label>
+                      <input
+                        id="playlist-library-search"
+                        type="search"
+                        className="playlist-search-input"
+                        placeholder="Search by name…"
+                        value={playlistLibrarySearch}
+                        onChange={(e) => setPlaylistLibrarySearch(e.target.value)}
+                        autoComplete="off"
+                        spellCheck={false}
+                      />
+                    </div>
                   </div>
+                  {filteredUnifiedGrid.length > 0 ? (
+                    <div className="playlist-grid">
+                      {filteredUnifiedGrid.map((p) => (
+                        <button
+                          key={`${p.service}:${p.id}`}
+                          type="button"
+                          className="playlist-card"
+                          data-service={p.service}
+                          onClick={() => {
+                            if (p.service === "spotify") void handleSpotifyPlaylistActivate(p.id)
+                            else {
+                              const full = tidalPlaylists.find((t) => t.id === p.id)
+                              if (full) void handleTidalPlaylistActivate(full)
+                            }
+                          }}
+                        >
+                          <div className="playlist-card__cover">
+                            {p.service === "spotify" && p.cover ? (
+                              <img src={p.cover} alt="" />
+                            ) : null}
+                            <span
+                              className={
+                                p.service === "spotify"
+                                  ? "playlist-card__badge playlist-card__badge--spotify"
+                                  : "playlist-card__badge playlist-card__badge--tidal"
+                              }
+                            >
+                              {p.service === "spotify" ? "Spotify" : "TIDAL"}
+                            </span>
+                          </div>
+                          <div className="playlist-card__body">
+                            <div className="playlist-card__name">{p.name}</div>
+                            {p.service === "tidal" ? (
+                              <div className="playlist-card__meta">{p.owner}</div>
+                            ) : null}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="muted playlist-search-empty">
+                      No playlists match &quot;{playlistLibrarySearch.trim()}&quot;.
+                    </p>
+                  )}
                 </>
               ) : null}
             </>

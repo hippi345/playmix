@@ -288,6 +288,68 @@ button:disabled {
   color: var(--pm-muted);
 }
 
+.playlist-library-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.75rem 1.25rem;
+  margin-bottom: 0.75rem;
+}
+
+.playlist-library-toolbar__title {
+  margin: 0;
+  flex: 1 1 auto;
+  min-width: 6rem;
+}
+
+.playlist-library-toolbar__search {
+  flex: 1 1 220px;
+  max-width: min(100%, 320px);
+  min-width: 160px;
+}
+
+.playlist-detail__track-search {
+  margin: 0 0 1rem;
+}
+
+.playlist-search-label {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--pm-muted);
+  margin-bottom: 0.35rem;
+}
+
+.playlist-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.55rem 0.75rem;
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--pm-text);
+  background: var(--pm-surface-2);
+  border: 1px solid var(--pm-border);
+  border-radius: var(--pm-radius-sm);
+  outline: none;
+}
+
+.playlist-search-input::placeholder {
+  color: var(--pm-muted);
+}
+
+.playlist-search-input:focus {
+  border-color: rgba(30, 215, 96, 0.45);
+  box-shadow: 0 0 0 1px rgba(30, 215, 96, 0.2);
+}
+
+.playlist-search-empty {
+  margin: 0.5rem 0 1rem;
+  font-size: 0.9rem;
+}
+
 /* Playlist grid */
 .playlist-grid {
   display: grid;
