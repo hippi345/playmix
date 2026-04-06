@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      SplashScreen must hand off to the real theme or API 31+ keeps the launcher icon up forever
+      while Compose loads (looks “stuck”, breaks Home until transition completes).
+    -->
+    <style name="Theme.Playmix" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/playmix_splash_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <item name="postSplashScreenTheme">@style/Theme.Playmix.Main</item>
+    </style>
+
+    <style name="Theme.Playmix.Main" parent="android:Theme.Material.NoActionBar">
+        <item name="android:colorBackground">@color/playmix_splash_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+
+    <style name="Theme.Playmix.OAuth" parent="Theme.Playmix.Main">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowAnimationStyle">@android:style/Animation</item>
+    </style>
+</resources>

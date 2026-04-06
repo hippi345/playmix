@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Playmix</string>
+    <string name="refresh_content_description">Refresh playlists</string>
+    <string name="oauth_unknown_path">Could not complete sign-in (unknown link).</string>
+    <string name="oauth_cancelled">Sign-in was cancelled.</string>
+    <string name="oauth_missing_code">Sign-in did not return an authorization code.</string>
+    <string name="oauth_state_mismatch">Sign-in did not match this app (another tab may have opened, or the screen was left open too long). Close other Spotify browser tabs and tap Connect again.</string>
+    <string name="oauth_missing_verifier">Sign-in data was lost before returning to the app. Try Connect again and complete login in the same tab.</string>
+    <string name="oauth_pending_save_failed">Could not save sign-in data. Please try again.</string>
+    <string name="oauth_restarted_flow">Starting a new sign-in. Close any other approval tabs in your browser, then approve only in the tab that opens next.</string>
+    <string name="oauth_use_browser_window_hint">Approve Spotify in the browser tab that just opened. If you tapped Connect more than once, close older Spotify tabs and approve only in the newest one.</string>
+    <string name="oauth_use_browser_window_hint_tidal">Sign in to TIDAL in the window that just opened. If you tapped Connect more than once, close older TIDAL or Playmix tabs and complete only the newest one.</string>
+    <string name="oauth_tidal_chooser_title">Open TIDAL sign-in with</string>
+    <string name="oauth_tidal_browser_fallback">Opening your default browser — allow JavaScript; pause ad blockers for TIDAL if login fails.</string>
+    <string name="tidal_oauth_setup_hint">TIDAL dashboard: add Android redirect URI exactly: com.playmix.app://oauth/tidal (in addition to any web URL). Emulators are often blocked; try a phone and Chrome from the chooser.</string>
+    <string name="oauth_no_browser">No app can open this link. Install a browser, then try Connect again.</string>
+    <string name="oauth_missing_refresh">Server did not return a refresh token. Try revoking app access and signing in again.</string>
+    <string name="connect_spotify">Connect Spotify</string>
+    <string name="reconnect_spotify">Reconnect Spotify</string>
+    <string name="connect_tidal">Connect TIDAL</string>
+    <string name="reconnect_tidal">Reconnect TIDAL</string>
+    <string name="sign_in_not_available">Can\'t connect - this service isn\'t configured in this build.</string>
+    <string name="spotify_playlist">Spotify playlist</string>
+    <string name="spotify_playlist_tracks_heading">Tracks</string>
+    <string name="spotify_playlist_no_tracks">No tracks to show.</string>
+    <string name="back_content_description">Back</string>
+    <string name="play_in_spotify">Play in Spotify</string>
+    <string name="connecting_spotify_app">Connecting to Spotify...</string>
+    <string name="spotify_pick_track">Play the playlist or tap a track. Audio goes to your active Spotify device (phone, computer, or Web Player).</string>
+    <string name="spotify_app_remote_hint">This device isn\'t running the Spotify app. Playback is controlled via Spotify Connect on your active device.</string>
+    <string name="spotify_playback_this_device_app">this device (Spotify app)</string>
+    <string name="spotify_playback_connect_generic">Spotify Connect</string>
+    <string name="spotify_client_id_missing">Spotify Client ID is not configured.</string>
+    <string name="play_pause">Play or pause</string>
+    <string name="skip_next">Skip to next</string>
+    <string name="skip_previous">Skip to previous</string>
+    <string name="playback_shuffle">Shuffle playback</string>
+    <string name="playback_repeat_cycle">Repeat: off, playlist, or one track</string>
+    <string name="playback_collapse_bar">Collapse now playing</string>
+    <string name="playback_expand_bar">Expand now playing</string>
+</resources>
