@@ -17,6 +17,8 @@
   --pm-radius-sm: 10px;
   /* Reserve space for fixed player (art + meta + scrub + transports) */
   --pm-bar-height: 132px;
+  /* Must match .service-sidebar width so the fixed player centers with .app__main */
+  --pm-sidebar-width: 4.25rem;
   color: var(--pm-text);
   background: var(--pm-bg);
 }
@@ -81,7 +83,7 @@ button:disabled {
 
 .service-sidebar {
   flex-shrink: 0;
-  width: 4.25rem;
+  width: var(--pm-sidebar-width);
   padding: 0.85rem 0.5rem;
   padding-left: calc(0.5rem + env(safe-area-inset-left, 0px));
   background: linear-gradient(180deg, var(--pm-surface) 0%, rgba(18, 18, 20, 0.97) 100%);
@@ -506,11 +508,13 @@ button:disabled {
 /* Now playing bar */
 .now-playing-bar {
   position: fixed;
-  left: 0;
+  /* Align with .app__body (not full viewport); inner max-width then matches .app__main */
+  left: var(--pm-sidebar-width);
   right: 0;
   bottom: 0;
   z-index: 9999;
-  padding: 0.65rem 1rem calc(0.65rem + env(safe-area-inset-bottom, 0px));
+  padding: 0.65rem max(1.25rem, env(safe-area-inset-right, 0px)) calc(0.65rem + env(safe-area-inset-bottom, 0px))
+    1.25rem;
   background: linear-gradient(180deg, transparent, rgba(7, 7, 8, 0.92) 28%);
   pointer-events: none;
 }
@@ -522,7 +526,7 @@ button:disabled {
   gap: 0.85rem;
   max-width: 960px;
   margin: 0 auto;
-  padding: 0.65rem 1rem;
+  padding: 0.65rem 1.25rem;
   background: rgba(26, 26, 30, 0.92);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
