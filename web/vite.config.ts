@@ -3,6 +3,7 @@ import path from "node:path"
 import os from "node:os"
 import { defineConfig, loadEnv } from "vite"
 import react from "@vitejs/plugin-react"
+import { soundcloudMediaProxyMiddleware } from "./vite.soundcloudMediaProxy"
 
 /**
  * Proxied 401/403 responses may include WWW-Authenticate. Browsers then show an HTTP Basic
@@ -51,6 +52,15 @@ export default defineConfig(({ mode }) => {
     cacheDir: viteCacheDir,
     plugins: [
       react(),
+      {
+        name: "soundcloud-media-cors-proxy",
+        configureServer(server) {
+          server.middlewares.use(soundcloudMediaProxyMiddleware())
+        },
+        configurePreviewServer(server) {
+          server.middlewares.use(soundcloudMediaProxyMiddleware())
+        },
+      },
       {
         name: "soundcloud-oauth-token-dev",
         configureServer(server) {
@@ -167,6 +177,9 @@ export default defineConfig(({ mode }) => {
           target: "https://api.soundcloud.com",
           changeOrigin: true,
           secure: true,
+          /** Avoid cutting off large stream responses when buffered through the dev proxy. */
+          timeout: 0,
+          proxyTimeout: 0,
           rewrite: (path) => path.replace(/^\/__soundcloud-api/, ""),
           configure: (proxy) => {
             proxy.on("proxyRes", (proxyRes, req) => {

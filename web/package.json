@@ -4,11 +4,12 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "kill-port 5173 && vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview"
   },
   "dependencies": {
+    "hls.js": "^1.6.15",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
@@ -17,6 +18,7 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
+    "kill-port": "^2.0.1",
     "typescript": "~5.6.3",
     "vite": "^6.0.3"
   }

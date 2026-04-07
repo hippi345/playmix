@@ -69,6 +69,10 @@ import {
 } from "./soundcloud/authFlow"
 import { openSoundcloudPermalink } from "./soundcloud/deeplink"
 import {
+  createSoundcloudHlsNetworkHooks,
+  rewriteSoundcloudMediaUrlForBrowser,
+} from "./soundcloud/mediaProxy"
+import {
   clearSoundcloudTokens,
   loadSoundcloudRefreshToken,
   readSoundcloudPkcePending,
@@ -217,7 +221,8 @@ export default function App() {
   const [soundcloudDeck, setSoundcloudDeck] = useState<SoundcloudDeckState | null>(null)
 
   const soundcloudAudioRef = useRef<HTMLAudioElement | null>(null)
-  const soundcloudBlobUrlRef = useRef<string | null>(null)
+  const soundcloudHlsRef = useRef<InstanceType<typeof import("hls.js").default> | null>(null)
+  const soundcloudStreamReleaseRef = useRef<(() => void) | null>(null)
   const soundcloudDeckRef = useRef<SoundcloudDeckState | null>(null)
   const loadSoundcloudAtIndexRef = useRef<(q: SoundcloudTrackRow[], i: number) => void>(() => {})
 
@@ -303,11 +308,8 @@ export default function App() {
   }, [spotifyClientId, syncSession, refreshPlaybackUi])
 
   const revokeSoundcloudBlobUrl = useCallback(() => {
-    const u = soundcloudBlobUrlRef.current
-    if (u) {
-      URL.revokeObjectURL(u)
-      soundcloudBlobUrlRef.current = null
-    }
+    soundcloudStreamReleaseRef.current?.()
+    soundcloudStreamReleaseRef.current = null
   }, [])
 
   const pauseLocalSoundcloud = useCallback(() => {
@@ -359,7 +361,6 @@ export default function App() {
         return
       }
 
-      soundcloudBlobUrlRef.current = prep.objectUrl
       const a = soundcloudAudioRef.current
       if (!a) {
         revokeSoundcloudBlobUrl()
@@ -381,7 +382,153 @@ export default function App() {
         loading: false,
       })
 
-      a.src = prep.objectUrl
+      const attempts = prep.playbackAttempts.filter((x) => x.audioSrc?.trim())
+      if (attempts.length === 0) {
+        revokeSoundcloudBlobUrl()
+        setSoundcloudDeck(null)
+        setErr("SoundCloud returned no playable URLs for this track.")
+        return
+      }
+
+      const waitAudioCanPlay = () =>
+        new Promise<void>((resolve, reject) => {
+          if (a.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+            resolve()
+            return
+          }
+          const tm = window.setTimeout(() => {
+            a.removeEventListener("canplay", onReady)
+            a.removeEventListener("error", onFail)
+            reject(new Error("SoundCloud audio timed out while loading."))
+          }, 30_000)
+          const onReady = () => {
+            window.clearTimeout(tm)
+            resolve()
+          }
+          const onFail = () => {
+            window.clearTimeout(tm)
+            const err = a.error
+            const code = err?.code ?? 0
+            const msg =
+              code === 4
+                ? "This audio source is not supported or could not be loaded (codec / network / rights)."
+                : err?.message || "Audio failed to load."
+            reject(new Error(msg))
+          }
+          a.addEventListener("canplay", onReady, { once: true })
+          a.addEventListener("error", onFail, { once: true })
+        })
+
+      let setupError: string | null = null
+      for (let ai = 0; ai < attempts.length; ai++) {
+        const { audioSrc, playbackUsesHls: attHls } = attempts[ai]
+        const srcLow = audioSrc.toLowerCase()
+        const looksLikeHls =
+          attHls ||
+          srcLow.includes(".m3u8") ||
+          srcLow.includes("playlist.m3u8") ||
+          srcLow.includes("media-streaming.soundcloud")
+
+        soundcloudHlsRef.current?.destroy()
+        soundcloudHlsRef.current = null
+        revokeSoundcloudBlobUrl()
+        soundcloudStreamReleaseRef.current = null
+        a.pause()
+        a.removeAttribute("src")
+        a.load()
+
+        try {
+          if (looksLikeHls) {
+            const mod = await import("hls.js")
+            const HlsCtor = mod.default
+            const canMse = typeof HlsCtor.isSupported === "function" && HlsCtor.isSupported()
+            const canNativeHls = !!a.canPlayType?.("application/vnd.apple.mpegurl")
+            if (canMse) {
+              const hlsNet = createSoundcloudHlsNetworkHooks(t)
+              const hls = new HlsCtor({
+                enableWorker: false,
+                xhrSetup: hlsNet.xhrSetup,
+                fetchSetup: hlsNet.fetchSetup,
+              })
+              soundcloudHlsRef.current = hls
+              hls.loadSource(rewriteSoundcloudMediaUrlForBrowser(audioSrc))
+              hls.attachMedia(a)
+              soundcloudStreamReleaseRef.current = () => {
+                hls.destroy()
+                soundcloudHlsRef.current = null
+                prep.release()
+              }
+              await new Promise<void>((resolve, reject) => {
+                const tm = window.setTimeout(() => {
+                  hls.off(HlsCtor.Events.MANIFEST_PARSED, onParsed)
+                  hls.off(HlsCtor.Events.ERROR, onErr)
+                  reject(new Error("SoundCloud HLS manifest timed out."))
+                }, 30_000)
+                const onParsed = () => {
+                  window.clearTimeout(tm)
+                  hls.off(HlsCtor.Events.MANIFEST_PARSED, onParsed)
+                  hls.off(HlsCtor.Events.ERROR, onErr)
+                  resolve()
+                }
+                const onErr = (
+                  _: unknown,
+                  data: { fatal?: boolean; type?: string; details?: string },
+                ) => {
+                  if (!data.fatal) return
+                  window.clearTimeout(tm)
+                  hls.off(HlsCtor.Events.MANIFEST_PARSED, onParsed)
+                  hls.off(HlsCtor.Events.ERROR, onErr)
+                  const detail = data.details || data.type || "HLS error"
+                  reject(
+                    new Error(
+                      detail === "manifestLoadError"
+                        ? "HLS manifest could not load (often CDN CORS). Trying another format if available…"
+                        : detail,
+                    ),
+                  )
+                }
+                hls.on(HlsCtor.Events.MANIFEST_PARSED, onParsed)
+                hls.on(HlsCtor.Events.ERROR, onErr)
+              })
+            } else if (canNativeHls) {
+              soundcloudHlsRef.current = null
+              a.src = rewriteSoundcloudMediaUrlForBrowser(audioSrc)
+              soundcloudStreamReleaseRef.current = prep.release
+              await waitAudioCanPlay()
+            } else {
+              throw new Error(
+                "HLS playback needs Chrome, Firefox, Edge, or Safari (native HLS).",
+              )
+            }
+          } else {
+            soundcloudHlsRef.current = null
+            a.src = rewriteSoundcloudMediaUrlForBrowser(audioSrc)
+            soundcloudStreamReleaseRef.current = prep.release
+            await waitAudioCanPlay()
+          }
+          setupError = null
+          break
+        } catch (e) {
+          soundcloudHlsRef.current?.destroy()
+          soundcloudHlsRef.current = null
+          setupError = e instanceof Error ? e.message : String(e)
+          if (ai === attempts.length - 1) {
+            revokeSoundcloudBlobUrl()
+            setSoundcloudDeck(null)
+            setErr(
+              attempts.length > 1
+                ? `Could not play this track after ${attempts.length} tries. Last error: ${setupError}`
+                : setupError,
+            )
+            return
+          }
+        }
+      }
+
+      if (setupError) {
+        return
+      }
+
       a.onended = () => {
         const deck = soundcloudDeckRef.current
         if (!deck) return
@@ -986,29 +1133,31 @@ export default function App() {
     setTracksNote(null)
     setTidalDetailTracks([])
     setTidalTracksNote(null)
-    const meta = await fetchPlaylistMeta(t, id)
-    if (!meta.ok) {
-      setDetailName("")
-      setDetailCover(null)
-      setErr(`Playlist HTTP ${meta.status}: ${meta.body.slice(0, 200)}`)
+    try {
+      const meta = await fetchPlaylistMeta(t, id)
+      if (!meta.ok) {
+        setDetailName("")
+        setDetailCover(null)
+        setErr(`Playlist HTTP ${meta.status}: ${meta.body.slice(0, 200)}`)
+        setPlaylistDetailView(false)
+        setSelectedSpotifyId(null)
+        return
+      }
+      setDetailName(meta.name)
+      setDetailCover(meta.image ?? null)
+      await delay(350)
+      const country = (await fetchMeCountry(t)) || "from_token"
+      await delay(350)
+      const items = await fetchPlaylistItems(t, id, country)
+      setTracks(items)
+      if (items.length === 0) {
+        setTracksNote(
+          "No tracks loaded (playlist may be empty, or you may only follow this playlist — owned playlists work best).",
+        )
+      }
+    } finally {
       setBusy(false)
-      setPlaylistDetailView(false)
-      setSelectedSpotifyId(null)
-      return
     }
-    setDetailName(meta.name)
-    setDetailCover(meta.image ?? null)
-    await delay(350)
-    const country = (await fetchMeCountry(t)) || "from_token"
-    await delay(350)
-    const items = await fetchPlaylistItems(t, id, country)
-    setTracks(items)
-    if (items.length === 0) {
-      setTracksNote(
-        "No tracks loaded (playlist may be empty, or you may only follow this playlist — owned playlists work best).",
-      )
-    }
-    setBusy(false)
   }
 
   const handleSpotifyPlaylistActivate = async (id: string) => {

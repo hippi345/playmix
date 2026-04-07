@@ -13,6 +13,12 @@ interface ImportMetaEnv {
   /** Dev: skip proxy and POST to SoundCloud token URL directly (may hit CORS in the browser). */
   readonly VITE_SOUNDCLOUD_DIRECT_TOKEN?: string
   readonly VITE_SOUNDCLOUD_DIRECT_API?: string
+  /**
+   * Load manifests/segments directly from SoundCloud CDNs (may hit CORS). Default: use /__soundcloud-media on localhost.
+   */
+  readonly VITE_SOUNDCLOUD_DIRECT_MEDIA?: string
+  /** Production: absolute base URL of a proxy that implements `?url=` like dev `GET /__soundcloud-media?url=` */
+  readonly VITE_SOUNDCLOUD_MEDIA_PROXY_BASE?: string
   readonly VITE_SOUNDCLOUD_LOG?: string
   readonly VITE_SOUNDCLOUD_PROXY_LOG?: string
   /** Dev: call auth.tidal.com token URL directly (default: use Vite proxy /__tidal-token) */
