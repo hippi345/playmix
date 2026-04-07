@@ -3,6 +3,18 @@ import type { SpotifyPlaybackState, SpotifyRepeatState } from "../spotify/player
 
 export type NowPlayingBarModel =
   | { source: "spotify"; state: SpotifyPlaybackState }
+  | {
+      source: "soundcloud"
+      trackKey: string
+      title: string
+      subtitle: string
+      artworkUrl: string | null
+      durationMs: number
+      positionMs: number
+      isPlaying: boolean
+      loading: boolean
+      canNext: boolean
+    }
   | { source: "tidal"; title: string; subtitle: string }
 
 type Props = {
@@ -14,6 +26,10 @@ type Props = {
   onSpotifyShuffle: () => void
   onSpotifyRepeatCycle: () => void
   onSpotifySeek: (positionMs: number) => void
+  onSoundcloudPlayPause: () => void
+  onSoundcloudPrevious: () => void
+  onSoundcloudNext: () => void
+  onSoundcloudSeek: (positionMs: number) => void
 }
 
 function IconShuffle() {
@@ -167,10 +183,15 @@ export function NowPlayingBar({
   onSpotifyShuffle,
   onSpotifyRepeatCycle,
   onSpotifySeek,
+  onSoundcloudPlayPause,
+  onSoundcloudPrevious,
+  onSoundcloudNext,
+  onSoundcloudSeek,
 }: Props) {
   const [smoothProgressMs, setSmoothProgressMs] = useState(0)
 
   const spState = model?.source === "spotify" ? model.state : null
+  const scState = model?.source === "soundcloud" ? model : null
 
   useEffect(() => {
     if (!spState) return
@@ -191,6 +212,28 @@ export function NowPlayingBar({
     spState?.progressMs,
     spState?.durationMs,
     spState?.item?.uri,
+  ])
+
+  useEffect(() => {
+    if (!scState) return
+    const p0 = scState.positionMs
+    const dur = scState.durationMs
+    if (!scState.isPlaying || scState.loading) {
+      setSmoothProgressMs(Math.min(p0, dur))
+      return
+    }
+    const t0 = Date.now()
+    const id = window.setInterval(() => {
+      const next = p0 + (Date.now() - t0)
+      setSmoothProgressMs(Math.min(dur, next))
+    }, 450)
+    return () => window.clearInterval(id)
+  }, [
+    scState?.isPlaying,
+    scState?.positionMs,
+    scState?.durationMs,
+    scState?.trackKey,
+    scState?.loading,
   ])
 
   if (!model) return null
@@ -298,6 +341,81 @@ export function NowPlayingBar({
                   onClick={onSpotifyRepeatCycle}
                 >
                   <IconRepeat mode={model.state.repeatState} />
+                </button>
+              </div>
+            </div>
+          </>
+        ) : model.source === "soundcloud" ? (
+          <>
+            <div className="now-playing-bar__art">
+              {model.artworkUrl ? (
+                <img src={model.artworkUrl} alt="" />
+              ) : (
+                <div className="now-playing-bar__art-placeholder now-playing-bar__art-placeholder--soundcloud" />
+              )}
+            </div>
+            <div className="now-playing-bar__center">
+              <div className="now-playing-bar__meta">
+                <div className="now-playing-bar__service">SoundCloud</div>
+                <div className="now-playing-bar__title">{model.title}</div>
+                <div className="now-playing-bar__sub">{model.subtitle || "SoundCloud"}</div>
+              </div>
+              <div className="now-playing-bar__progress-row">
+                <span className="now-playing-bar__time">{formatTime(smoothProgressMs)}</span>
+                <input
+                  type="range"
+                  className="now-playing-bar__scrub"
+                  min={0}
+                  max={Math.max(1, model.durationMs)}
+                  value={Math.min(model.durationMs, smoothProgressMs)}
+                  disabled={busy || model.loading || model.durationMs <= 1}
+                  aria-label="Playback position"
+                  onChange={(e) => {
+                    const v = Number(e.target.value)
+                    if (Number.isFinite(v)) setSmoothProgressMs(v)
+                  }}
+                  onPointerUp={(e) => {
+                    const t = e.currentTarget as HTMLInputElement
+                    onSoundcloudSeek(Number(t.value))
+                  }}
+                  onKeyUp={(e) => {
+                    if (e.key === "Enter") {
+                      const t = e.currentTarget as HTMLInputElement
+                      onSoundcloudSeek(Number(t.value))
+                    }
+                  }}
+                />
+                <span className="now-playing-bar__time">{formatTime(model.durationMs)}</span>
+              </div>
+              <div className="now-playing-bar__transports now-playing-bar__transports--soundcloud">
+                <button
+                  type="button"
+                  className="now-playing-bar__tbtn"
+                  disabled={busy || model.loading}
+                  aria-label="Previous track"
+                  title="Previous"
+                  onClick={onSoundcloudPrevious}
+                >
+                  <IconSkipBack />
+                </button>
+                <button
+                  type="button"
+                  className="now-playing-bar__play"
+                  disabled={busy || model.loading}
+                  aria-label={model.isPlaying ? "Pause" : "Play"}
+                  onClick={onSoundcloudPlayPause}
+                >
+                  {model.isPlaying ? <IconPause /> : <IconPlay />}
+                </button>
+                <button
+                  type="button"
+                  className="now-playing-bar__tbtn"
+                  disabled={busy || model.loading || !model.canNext}
+                  aria-label="Next track"
+                  title="Next"
+                  onClick={onSoundcloudNext}
+                >
+                  <IconSkipForward />
                 </button>
               </div>
             </div>

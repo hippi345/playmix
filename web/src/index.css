@@ -12,6 +12,7 @@
   --pm-spotify: #1ed760;
   --pm-spotify-dim: #169c46;
   --pm-tidal: #ffffff;
+  --pm-soundcloud: #ff5500;
   --pm-danger: #f87171;
   --pm-radius: 14px;
   --pm-radius-sm: 10px;
@@ -166,6 +167,17 @@ button:disabled {
   box-shadow: 0 0 24px rgba(255, 255, 255, 0.12);
 }
 
+.service-sidebar__btn--soundcloud.service-sidebar__btn--linked {
+  color: #ff5500;
+  border-color: rgba(255, 85, 0, 0.5);
+  background: rgba(255, 85, 0, 0.12);
+  box-shadow: 0 0 18px rgba(255, 85, 0, 0.18);
+}
+
+.service-sidebar__btn--soundcloud.service-sidebar__btn--linked:hover:not(:disabled) {
+  box-shadow: 0 0 26px rgba(255, 85, 0, 0.28);
+}
+
 .app-header {
   display: flex;
   flex-wrap: wrap;
@@ -218,6 +230,16 @@ button:disabled {
 
 .btn--tidal:hover:not(:disabled) {
   filter: brightness(0.95);
+}
+
+.btn--soundcloud {
+  background: #ff5500;
+  color: #0a0a0a;
+}
+
+.btn--soundcloud:hover:not(:disabled) {
+  filter: brightness(1.05);
+  box-shadow: 0 0 22px rgba(255, 85, 0, 0.35);
 }
 
 .btn--ghost {
@@ -420,6 +442,11 @@ button:disabled {
   border: 1px solid rgba(255, 255, 255, 0.25);
 }
 
+.playlist-card__badge--soundcloud {
+  background: rgba(255, 85, 0, 0.95);
+  color: #0a0a0a;
+}
+
 .playlist-card__body {
   padding: 0.75rem 0.85rem 0.85rem;
 }
@@ -597,7 +624,8 @@ button:disabled {
   box-shadow: 0 -8px 40px rgba(0, 0, 0, 0.55);
 }
 
-.now-playing-bar__inner[data-source="spotify"] {
+.now-playing-bar__inner[data-source="spotify"],
+.now-playing-bar__inner[data-source="soundcloud"] {
   align-items: stretch;
 }
 
@@ -635,6 +663,10 @@ button:disabled {
 
 .now-playing-bar__art-placeholder--tidal {
   background: linear-gradient(135deg, #000, #333);
+}
+
+.now-playing-bar__art-placeholder--soundcloud {
+  background: linear-gradient(135deg, #5c2400, #331308);
 }
 
 .now-playing-bar__meta {
@@ -681,6 +713,10 @@ button:disabled {
   align-items: center;
   gap: 0.2rem;
   justify-content: center;
+}
+
+.now-playing-bar__transports--soundcloud {
+  gap: 0.35rem;
 }
 
 .now-playing-bar__icon-svg {
@@ -757,6 +793,18 @@ button:disabled {
 
 .now-playing-bar__inner[data-source="tidal"] .now-playing-bar__service {
   color: #e4e4e7;
+}
+
+.now-playing-bar__inner[data-source="soundcloud"] .now-playing-bar__service {
+  color: var(--pm-soundcloud);
+}
+
+.now-playing-bar__inner[data-source="soundcloud"] .now-playing-bar__scrub {
+  accent-color: var(--pm-soundcloud);
+}
+
+.now-playing-bar__inner[data-source="soundcloud"] .now-playing-bar__play {
+  background: var(--pm-soundcloud);
 }
 
 .now-playing-bar__title {
