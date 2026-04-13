@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { NowPlayingBar } from "./components/NowPlayingBar"
+import { PlaymixesPanel, type PlaymixSearchResults } from "./components/PlaymixesPanel"
 import { ServiceSidebar } from "./components/ServiceSidebar"
 import {
   clearMeProfileCache,
@@ -8,12 +9,14 @@ import {
   fetchMeCountry,
   fetchPlaylistItems,
   fetchPlaylistMeta,
+  searchSpotifyTopTrack,
   type MePlaylistItem,
   type PlaylistTrackRow,
 } from "./spotify/api"
 import {
   fetchPlaybackState,
   playPlaylistTrack,
+  playSpotifyTrackUris,
   seekToPosition,
   setPaused,
   setRepeatMode,
@@ -21,6 +24,7 @@ import {
   skipToNext,
   skipToPrevious,
   startPlaylistPlayback,
+  nextRepeatModeInControlCycle,
   type SpotifyPlaybackState,
   type SpotifyRepeatState,
 } from "./spotify/player"
@@ -39,6 +43,7 @@ import {
 import {
   fetchTidalPlaylistItems,
   fetchTidalPlaylistSummaries,
+  searchTidalTopTrack,
   type TidalPlaylistItem,
   type TidalTrackRow,
 } from "./tidal/api"
@@ -59,6 +64,7 @@ import {
   fetchSoundcloudPlaylistMeta,
   fetchSoundcloudPlaylistTracks,
   prepareSoundcloudTrackPlayback,
+  searchSoundcloudTracks,
   type SoundcloudPlaylistItem,
   type SoundcloudTrackRow,
 } from "./soundcloud/api"
@@ -78,8 +84,11 @@ import {
   readSoundcloudPkcePending,
   soundcloudAccessTokenIfValid,
 } from "./soundcloud/session"
+import { loadPlaymixPlaylists, savePlaymixPlaylists } from "./playmixes/storage"
+import type { PlaymixPlaylist, PlaymixSession } from "./playmixes/types"
 
 type LibraryTab = "all" | "spotify" | "tidal" | "soundcloud"
+type MainView = "library" | "playmixes"
 
 type SoundcloudDeckState = {
   queue: SoundcloudTrackRow[]
@@ -92,6 +101,8 @@ type SoundcloudDeckState = {
   positionMs: number
   isPlaying: boolean
   loading: boolean
+  shuffle: boolean
+  repeatMode: SpotifyRepeatState
 }
 
 type UnifiedPlaylist =
@@ -113,6 +124,25 @@ type UnifiedPlaylist =
       name: string
       cover: string | null
     }
+
+function pickRandomSoundcloudQueueIndex(length: number, avoidIndex: number): number {
+  if (length <= 1) return 0
+  let j = avoidIndex
+  for (let n = 0; n < 16 && j === avoidIndex; n++) {
+    j = Math.floor(Math.random() * length)
+  }
+  return j
+}
+
+function soundcloudDeckCanNext(d: SoundcloudDeckState): boolean {
+  const n = d.queue.length
+  if (n === 0) return false
+  if (n === 1) return d.repeatMode === "context"
+  if (d.queueIndex + 1 < n) return true
+  if (d.repeatMode === "context") return true
+  if (d.shuffle) return true
+  return false
+}
 
 /** Hides raw OAuth/state tokens from the alert (user-readable messages contain spaces or punctuation). */
 function isLikelyOpaqueTokenMessage(message: string): boolean {
@@ -219,12 +249,21 @@ export default function App() {
   const [soundcloudDetailTracks, setSoundcloudDetailTracks] = useState<SoundcloudTrackRow[]>([])
   const [soundcloudTracksNote, setSoundcloudTracksNote] = useState<string | null>(null)
   const [soundcloudDeck, setSoundcloudDeck] = useState<SoundcloudDeckState | null>(null)
+  const [mainView, setMainView] = useState<MainView>("library")
+  const [playmixPlaylists, setPlaymixPlaylists] = useState<PlaymixPlaylist[]>(() => loadPlaymixPlaylists())
+  const [playmixSession, setPlaymixSession] = useState<PlaymixSession | null>(null)
 
-  const soundcloudAudioRef = useRef<HTMLAudioElement | null>(null)
+  /** Hidden `<video>` (not `<audio>`): MSE/HLS often reports `currentTime === 0` on `<audio>` while sound plays. */
+  const soundcloudAudioRef = useRef<HTMLVideoElement | null>(null)
   const soundcloudHlsRef = useRef<InstanceType<typeof import("hls.js").default> | null>(null)
+  /** When `currentTime` is stuck at 0, advance UI from wall clock until the media element catches up. */
+  const soundcloudMediaClockRef = useRef<{ tPerf: number; positionMs: number } | null>(null)
   const soundcloudStreamReleaseRef = useRef<(() => void) | null>(null)
   const soundcloudDeckRef = useRef<SoundcloudDeckState | null>(null)
   const loadSoundcloudAtIndexRef = useRef<(q: SoundcloudTrackRow[], i: number) => void>(() => {})
+  const playmixSessionRef = useRef<PlaymixSession | null>(null)
+  const playmixPlaylistsRef = useRef<PlaymixPlaylist[]>(playmixPlaylists)
+  const playPlaymixFromIndexRef = useRef<(pm: PlaymixPlaylist, i: number) => Promise<void>>(async () => {})
 
   const [spotifyPlayback, setSpotifyPlayback] = useState<SpotifyPlaybackState | null>(null)
   /** Set when the user starts a TIDAL playlist from Playmix; cleared when Spotify starts playing. */
@@ -319,10 +358,23 @@ export default function App() {
   }, [])
 
   const loadAndPlaySoundcloudAtIndex = useCallback(
-    async (queue: SoundcloudTrackRow[], index: number) => {
+    async (
+      queue: SoundcloudTrackRow[],
+      index: number,
+      opts?: { onSingleTrackEnded?: () => void },
+    ) => {
       if (!soundcloudClientId) return
       const row = queue[index]
       if (!row) return
+      if (!opts?.onSingleTrackEnded) {
+        setPlaymixSession(null)
+      }
+      const prevDeck = soundcloudDeckRef.current
+      const inheritTransport =
+        prevDeck && prevDeck.queue === queue
+          ? { shuffle: prevDeck.shuffle, repeatMode: prevDeck.repeatMode }
+          : { shuffle: false, repeatMode: "off" as SpotifyRepeatState }
+      soundcloudMediaClockRef.current = null
       setTidalNowPlaying(null)
       setErr(null)
       const t = await syncSoundcloudSession()
@@ -352,6 +404,8 @@ export default function App() {
         positionMs: 0,
         isPlaying: false,
         loading: true,
+        shuffle: inheritTransport.shuffle,
+        repeatMode: inheritTransport.repeatMode,
       })
 
       const prep = await prepareSoundcloudTrackPlayback(t, soundcloudClientId, row.id, row.durationMs)
@@ -380,6 +434,8 @@ export default function App() {
         positionMs: 0,
         isPlaying: false,
         loading: false,
+        shuffle: inheritTransport.shuffle,
+        repeatMode: inheritTransport.repeatMode,
       })
 
       const attempts = prep.playbackAttempts.filter((x) => x.audioSrc?.trim())
@@ -529,12 +585,28 @@ export default function App() {
         return
       }
 
+      const onSingleEnd = opts?.onSingleTrackEnded
       a.onended = () => {
+        if (onSingleEnd) {
+          onSingleEnd()
+          return
+        }
         const deck = soundcloudDeckRef.current
         if (!deck) return
+        if (deck.repeatMode === "track") {
+          loadSoundcloudAtIndexRef.current(deck.queue, deck.queueIndex)
+          return
+        }
+        if (deck.shuffle && deck.queue.length > 1) {
+          const j = pickRandomSoundcloudQueueIndex(deck.queue.length, deck.queueIndex)
+          loadSoundcloudAtIndexRef.current(deck.queue, j)
+          return
+        }
         const next = deck.queueIndex + 1
         if (next < deck.queue.length) {
           loadSoundcloudAtIndexRef.current(deck.queue, next)
+        } else if (deck.repeatMode === "context") {
+          loadSoundcloudAtIndexRef.current(deck.queue, 0)
         } else {
           setSoundcloudDeck({
             ...deck,
@@ -559,6 +631,163 @@ export default function App() {
     [pauseSpotifyRemote, soundcloudClientId, revokeSoundcloudBlobUrl, syncSoundcloudSession],
   )
 
+  const playPlaymixFromIndex = useCallback(
+    async (pm: PlaymixPlaylist, index: number) => {
+      if (index < 0) {
+        setPlaymixSession(null)
+        return
+      }
+      if (index >= pm.tracks.length) {
+        setPlaymixSession(null)
+        pauseLocalSoundcloud()
+        const t = await syncSession()
+        if (t) await setPaused(t, true)
+        await refreshPlaybackUi()
+        return
+      }
+      const entry = pm.tracks[index]
+      setPlaymixSession({
+        playmixId: pm.id,
+        playmixName: pm.name,
+        tracks: pm.tracks,
+        index,
+      })
+
+      if (entry.service === "tidal") {
+        setErr("TIDAL rows are preview-only in Playmix until in-app playback is supported.")
+        return
+      }
+
+      if (entry.service === "spotify") {
+        if (!entry.spotifyUri?.trim()) {
+          setErr("Missing Spotify URI.")
+          return
+        }
+        const a = soundcloudAudioRef.current
+        if (a) {
+          a.onended = null
+          a.pause()
+          revokeSoundcloudBlobUrl()
+          a.removeAttribute("src")
+          a.load()
+        }
+        soundcloudHlsRef.current?.destroy()
+        soundcloudHlsRef.current = null
+        setSoundcloudDeck(null)
+        setTidalNowPlaying(null)
+        setErr(null)
+        const t = await syncSession()
+        if (!t) {
+          setErr("Spotify session expired.")
+          return
+        }
+        setBusy(true)
+        const r = await playSpotifyTrackUris(t, [entry.spotifyUri])
+        setBusy(false)
+        if (!r.ok) {
+          setErr(r.detail)
+          return
+        }
+        await refreshPlaybackUi()
+        return
+      }
+
+      if (entry.service === "soundcloud") {
+        if (!entry.soundcloudTrackId || !(entry.soundcloudPermalinkUrl ?? "").trim()) {
+          setErr("Missing SoundCloud track URL.")
+          return
+        }
+        const row: SoundcloudTrackRow = {
+          id: entry.soundcloudTrackId,
+          title: entry.title,
+          artistLine: entry.artistLine,
+          durationMs: entry.durationMs,
+          permalinkUrl: entry.soundcloudPermalinkUrl ?? "",
+        }
+        const idxSnap = index
+        await loadAndPlaySoundcloudAtIndex([row], 0, {
+          onSingleTrackEnded: () => {
+            const s = playmixSessionRef.current
+            if (!s || s.playmixId !== pm.id || s.index !== idxSnap) return
+            void playPlaymixFromIndexRef.current(pm, idxSnap + 1)
+          },
+        })
+      }
+    },
+    [
+      loadAndPlaySoundcloudAtIndex,
+      pauseLocalSoundcloud,
+      refreshPlaybackUi,
+      revokeSoundcloudBlobUrl,
+      syncSession,
+    ],
+  )
+
+  useEffect(() => {
+    playPlaymixFromIndexRef.current = playPlaymixFromIndex
+  }, [playPlaymixFromIndex])
+
+  const runPlaymixSearch = useCallback(
+    async (q: string): Promise<PlaymixSearchResults> => {
+      const query = q.trim()
+      let spotify: PlaymixSearchResults["spotify"] = { status: "skip" }
+      let soundcloud: PlaymixSearchResults["soundcloud"] = { status: "skip" }
+      let tidal: PlaymixSearchResults["tidal"] = { status: "skip" }
+
+      if (signedIn && spotifyClientId) {
+        const t = await syncSession()
+        if (t) {
+          const r = await searchSpotifyTopTrack(t, query)
+          spotify = r.ok ? { status: "ok", track: r.track } : { status: "err", msg: r.detail }
+        } else {
+          spotify = { status: "err", msg: "Spotify not connected." }
+        }
+      }
+
+      if (soundcloudSignedIn && soundcloudClientId) {
+        const t = await syncSoundcloudSession()
+        if (t) {
+          const r = await searchSoundcloudTracks(t, soundcloudClientId, query, 1)
+          if (r.ok) {
+            const top = r.items[0]
+            soundcloud = top
+              ? { status: "ok", track: top }
+              : { status: "err", msg: "No SoundCloud tracks found." }
+          } else {
+            soundcloud = { status: "err", msg: r.detail }
+          }
+        } else {
+          soundcloud = { status: "err", msg: "SoundCloud not connected." }
+        }
+      }
+
+      if (tidalSignedIn && tidalClientId) {
+        const t = await syncTidalSession()
+        if (t) {
+          const r = await searchTidalTopTrack(t, tidalClientId, query)
+          tidal = r.ok
+            ? { status: "ok", track: r.track, artworkUrl: r.artworkUrl }
+            : { status: "err", msg: r.detail }
+        } else {
+          tidal = { status: "err", msg: "TIDAL not connected." }
+        }
+      }
+
+      return { spotify, soundcloud, tidal }
+    },
+    [
+      signedIn,
+      spotifyClientId,
+      soundcloudSignedIn,
+      soundcloudClientId,
+      tidalSignedIn,
+      tidalClientId,
+      syncSession,
+      syncSoundcloudSession,
+      syncTidalSession,
+    ],
+  )
+
   useEffect(() => {
     loadSoundcloudAtIndexRef.current = (q, i) => {
       void loadAndPlaySoundcloudAtIndex(q, i)
@@ -570,19 +799,72 @@ export default function App() {
   }, [soundcloudDeck])
 
   useEffect(() => {
-    if (!soundcloudDeck?.isPlaying || soundcloudDeck.loading) return
+    playmixSessionRef.current = playmixSession
+  }, [playmixSession])
+
+  useEffect(() => {
+    playmixPlaylistsRef.current = playmixPlaylists
+  }, [playmixPlaylists])
+
+  useEffect(() => {
+    savePlaymixPlaylists(playmixPlaylists)
+  }, [playmixPlaylists])
+
+  useEffect(() => {
+    if (!soundcloudDeck?.isPlaying) return
     const a = soundcloudAudioRef.current
     if (!a) return
-    const id = window.setInterval(() => {
-      const ms = Math.floor(a.currentTime * 1000)
+
+    const tick = () => {
+      if (a.paused) return
+      const deck = soundcloudDeckRef.current
+      if (!deck?.isPlaying) return
+
+      const cap = Math.max(deck.durationMs, 1)
+      const raw = a.currentTime
+      let ms: number
+
+      if (Number.isFinite(raw) && raw > 0.02) {
+        ms = Math.floor(raw * 1000)
+        soundcloudMediaClockRef.current = { tPerf: performance.now(), positionMs: ms }
+      } else {
+        const c = soundcloudMediaClockRef.current
+        if (c) {
+          ms = Math.floor(Math.min(cap, c.positionMs + (performance.now() - c.tPerf)))
+        } else {
+          ms = 0
+          soundcloudMediaClockRef.current = { tPerf: performance.now(), positionMs: 0 }
+        }
+      }
+
+      ms = Math.min(cap, Math.max(0, ms))
       setSoundcloudDeck((d) => {
-        if (!d || d.loading) return d
-        const cap = Math.max(d.durationMs, 1)
-        return { ...d, positionMs: Math.min(cap, ms) }
+        if (!d || !d.isPlaying) return d
+        const c2 = Math.max(d.durationMs, 1)
+        const next = Math.min(c2, ms)
+        return next === d.positionMs ? d : { ...d, positionMs: next }
       })
-    }, 400)
-    return () => window.clearInterval(id)
-  }, [soundcloudDeck?.isPlaying, soundcloudDeck?.trackId, soundcloudDeck?.loading])
+    }
+
+    const onSeeked = () => {
+      const r = a.currentTime
+      const ms = Number.isFinite(r) && r >= 0 ? Math.floor(r * 1000) : 0
+      soundcloudMediaClockRef.current = { tPerf: performance.now(), positionMs: ms }
+      tick()
+    }
+
+    tick()
+    a.addEventListener("timeupdate", tick)
+    a.addEventListener("seeked", onSeeked)
+    a.addEventListener("playing", tick)
+    const id = window.setInterval(tick, 200)
+    return () => {
+      a.removeEventListener("timeupdate", tick)
+      a.removeEventListener("seeked", onSeeked)
+      a.removeEventListener("playing", tick)
+      window.clearInterval(id)
+    }
+  }, [soundcloudDeck?.isPlaying, soundcloudDeck?.trackId])
 
   useEffect(() => {
     const a = soundcloudAudioRef.current
@@ -601,12 +883,22 @@ export default function App() {
     const sp = spotifyPlayback
     const tidal = tidalNowPlaying
     const sc = soundcloudDeck
+    const pm = playmixSession
 
     if (sp?.isPlaying && sp.item) {
       return { source: "spotify", state: sp }
     }
 
     if (sc && !sp?.isPlaying) {
+      const curPm = pm?.tracks[pm.index]
+      const playmixAdvancesFromSoundcloudBar =
+        pm &&
+        sc.queue.length === 1 &&
+        curPm?.service === "soundcloud" &&
+        curPm.soundcloudTrackId === sc.trackId
+      const canNext = playmixAdvancesFromSoundcloudBar
+        ? pm.index < pm.tracks.length
+        : soundcloudDeckCanNext(sc)
       return {
         source: "soundcloud",
         trackKey: sc.trackId,
@@ -617,7 +909,9 @@ export default function App() {
         positionMs: sc.positionMs,
         isPlaying: sc.isPlaying,
         loading: sc.loading,
-        canNext: sc.queueIndex + 1 < sc.queue.length,
+        shuffle: sc.shuffle,
+        repeatMode: sc.repeatMode,
+        canNext,
       }
     }
 
@@ -634,7 +928,7 @@ export default function App() {
     }
 
     return null
-  }, [spotifyPlayback, tidalNowPlaying, soundcloudDeck])
+  }, [spotifyPlayback, tidalNowPlaying, soundcloudDeck, playmixSession])
 
   useEffect(() => {
     if (spotifyPlayback?.isPlaying) {
@@ -1116,6 +1410,11 @@ export default function App() {
       })
   }, [soundcloudDetailTracks, playlistDetailTrackSearch])
 
+  const spotifyNowPlayingUri = useMemo(
+    () => spotifyPlayback?.item?.uri?.trim() || null,
+    [spotifyPlayback?.item?.uri],
+  )
+
   const loadSpotifyDetail = async (id: string) => {
     const t = await syncSession()
     if (!t) return
@@ -1161,6 +1460,8 @@ export default function App() {
   }
 
   const handleSpotifyPlaylistActivate = async (id: string) => {
+    setMainView("library")
+    setPlaymixSession(null)
     setPlaylistDetailView(true)
     setTidalNowPlaying(null)
     const t = accessTokenIfValid() || (await syncSession())
@@ -1172,6 +1473,8 @@ export default function App() {
   }
 
   const handleTidalPlaylistActivate = async (p: TidalPlaylistItem) => {
+    setMainView("library")
+    setPlaymixSession(null)
     setPlaylistDetailTrackSearch("")
     setPlaylistDetailView(true)
     setSelectedSoundcloud(null)
@@ -1212,6 +1515,7 @@ export default function App() {
   }
 
   const handleSoundcloudPlaylistActivate = async (p: SoundcloudPlaylistItem) => {
+    setMainView("library")
     const a = soundcloudAudioRef.current
     if (a) {
       a.onended = null
@@ -1219,6 +1523,7 @@ export default function App() {
       a.removeAttribute("src")
     }
     revokeSoundcloudBlobUrl()
+    setPlaymixSession(null)
     setSoundcloudDeck(null)
     setPlaylistDetailTrackSearch("")
     setPlaylistDetailView(true)
@@ -1273,6 +1578,7 @@ export default function App() {
 
   const handlePlayTrack = async (row: PlaylistTrackRow) => {
     if (!selectedSpotifyId) return
+    setPlaymixSession(null)
     setTidalNowPlaying(null)
     const uri = trackUri(row)
     if (!uri) return
@@ -1329,6 +1635,24 @@ export default function App() {
   const handleSpotifySkipPrevious = async () => {
     const t = accessTokenIfValid() || (await syncSession())
     if (!t) return
+    const pm = playmixSessionRef.current
+    if (pm && pm.index > 0) {
+      const cur = pm.tracks[pm.index]
+      if (
+        cur?.service === "spotify" &&
+        cur.spotifyUri &&
+        spotifyPlayback?.item?.uri === cur.spotifyUri
+      ) {
+        const pl = playmixPlaylistsRef.current.find((x) => x.id === pm.playmixId)
+        if (pl) {
+          setBusy(true)
+          setErr(null)
+          await playPlaymixFromIndexRef.current(pl, pm.index - 1)
+          setBusy(false)
+          return
+        }
+      }
+    }
     setBusy(true)
     setErr(null)
     const r = await skipToPrevious(t)
@@ -1344,6 +1668,24 @@ export default function App() {
   const handleSpotifySkipNext = async () => {
     const t = accessTokenIfValid() || (await syncSession())
     if (!t) return
+    const pm = playmixSessionRef.current
+    if (pm) {
+      const cur = pm.tracks[pm.index]
+      if (
+        cur?.service === "spotify" &&
+        cur.spotifyUri &&
+        spotifyPlayback?.item?.uri === cur.spotifyUri
+      ) {
+        const pl = playmixPlaylistsRef.current.find((x) => x.id === pm.playmixId)
+        if (pl) {
+          setBusy(true)
+          setErr(null)
+          await playPlaymixFromIndexRef.current(pl, pm.index + 1)
+          setBusy(false)
+          return
+        }
+      }
+    }
     setBusy(true)
     setErr(null)
     const r = await skipToNext(t)
@@ -1375,9 +1717,7 @@ export default function App() {
   const handleSpotifyRepeatCycleBar = async () => {
     const st = spotifyPlayback
     if (!st) return
-    const order: SpotifyRepeatState[] = ["off", "context", "track"]
-    const idx = Math.max(0, order.indexOf(st.repeatState))
-    const next = order[(idx + 1) % order.length]
+    const next = nextRepeatModeInControlCycle(st.repeatState)
     const t = accessTokenIfValid() || (await syncSession())
     if (!t) return
     setBusy(true)
@@ -1393,6 +1733,7 @@ export default function App() {
 
   const handleDetailPlaySpotify = async () => {
     if (!selectedSpotifyId) return
+    setPlaymixSession(null)
     setTidalNowPlaying(null)
     const t = accessTokenIfValid() || (await syncSession())
     if (!t) return
@@ -1439,22 +1780,74 @@ export default function App() {
     setSoundcloudDeck((d) => (d ? { ...d, positionMs: ms } : d))
   }, [])
 
+  const handleSoundcloudShuffleBar = useCallback(() => {
+    setSoundcloudDeck((x) => (x ? { ...x, shuffle: !x.shuffle } : x))
+  }, [])
+
+  const handleSoundcloudRepeatCycleBar = useCallback(() => {
+    setSoundcloudDeck((x) => (x ? { ...x, repeatMode: nextRepeatModeInControlCycle(x.repeatMode) } : x))
+  }, [])
+
   const handleSoundcloudPreviousBar = useCallback(() => {
+    const pm = playmixSessionRef.current
     const d = soundcloudDeck
+    if (pm && d && d.queue.length === 1 && !d.loading) {
+      const cur = pm.tracks[pm.index]
+      if (cur?.service === "soundcloud" && cur.soundcloudTrackId === d.trackId && pm.index > 0) {
+        const pl = playmixPlaylistsRef.current.find((x) => x.id === pm.playmixId)
+        if (pl) {
+          void playPlaymixFromIndexRef.current(pl, pm.index - 1)
+          return
+        }
+      }
+    }
     if (!d || d.loading) return
-    if (d.queueIndex > 0) {
-      void loadAndPlaySoundcloudAtIndex(d.queue, d.queueIndex - 1)
-    } else {
-      const el = soundcloudAudioRef.current
+    const el = soundcloudAudioRef.current
+    const posMs = el && Number.isFinite(el.currentTime) ? Math.floor(el.currentTime * 1000) : 0
+    if (posMs > 2500) {
       if (el) el.currentTime = 0
       setSoundcloudDeck((d0) => (d0 ? { ...d0, positionMs: 0 } : d0))
+      return
     }
+    if (d.queueIndex > 0) {
+      void loadAndPlaySoundcloudAtIndex(d.queue, d.queueIndex - 1)
+      return
+    }
+    if (d.repeatMode === "context" && d.queue.length > 1) {
+      void loadAndPlaySoundcloudAtIndex(d.queue, d.queue.length - 1)
+      return
+    }
+    if (el) el.currentTime = 0
+    setSoundcloudDeck((d0) => (d0 ? { ...d0, positionMs: 0 } : d0))
   }, [soundcloudDeck, loadAndPlaySoundcloudAtIndex])
 
   const handleSoundcloudNextBar = useCallback(() => {
+    const pm = playmixSessionRef.current
     const d = soundcloudDeck
-    if (!d || d.loading || d.queueIndex + 1 >= d.queue.length) return
-    void loadAndPlaySoundcloudAtIndex(d.queue, d.queueIndex + 1)
+    if (pm && d && d.queue.length === 1 && !d.loading) {
+      const cur = pm.tracks[pm.index]
+      if (cur?.service === "soundcloud" && cur.soundcloudTrackId === d.trackId) {
+        const pl = playmixPlaylistsRef.current.find((x) => x.id === pm.playmixId)
+        if (pl) {
+          void playPlaymixFromIndexRef.current(pl, pm.index + 1)
+          return
+        }
+      }
+    }
+    if (!d || d.loading) return
+    if (!soundcloudDeckCanNext(d)) return
+    if (d.shuffle && d.queue.length > 1) {
+      const j = pickRandomSoundcloudQueueIndex(d.queue.length, d.queueIndex)
+      void loadAndPlaySoundcloudAtIndex(d.queue, j)
+      return
+    }
+    if (d.queueIndex + 1 < d.queue.length) {
+      void loadAndPlaySoundcloudAtIndex(d.queue, d.queueIndex + 1)
+      return
+    }
+    if (d.repeatMode === "context") {
+      void loadAndPlaySoundcloudAtIndex(d.queue, 0)
+    }
   }, [soundcloudDeck, loadAndPlaySoundcloudAtIndex])
 
   if (!spotifyClientId && !tidalClientId && !soundcloudClientId) {
@@ -1502,7 +1895,7 @@ export default function App() {
 
   return (
     <div className="app">
-      <audio
+      <video
         ref={soundcloudAudioRef}
         preload="auto"
         playsInline
@@ -1525,8 +1918,31 @@ export default function App() {
       />
       <div className="app__body">
         <div className="app__main">
-          <header className="app-header app-header--minimal">
-            <h1 className="app-brand__title">Playmix</h1>
+          <header className="app-header app-header--minimal app-header--with-nav">
+            <div className="app-header__row">
+              <h1 className="app-brand__title">Playmix</h1>
+              <nav className="app-main-nav" aria-label="Primary">
+                <button
+                  type="button"
+                  className="app-main-nav__btn"
+                  data-active={mainView === "library"}
+                  onClick={() => setMainView("library")}
+                >
+                  Library
+                </button>
+                <button
+                  type="button"
+                  className="app-main-nav__btn app-main-nav__btn--playmix"
+                  data-active={mainView === "playmixes"}
+                  onClick={() => {
+                    setMainView("playmixes")
+                    closePlaylistDetail()
+                  }}
+                >
+                  Playmixes
+                </button>
+              </nav>
+            </div>
           </header>
 
         {err && !isLikelyOpaqueTokenMessage(err) ? (
@@ -1543,7 +1959,26 @@ export default function App() {
         ) : null}
 
         {anyServiceSignedIn ? (
-          inPlaylistDetail ? (
+          mainView === "playmixes" ? (
+            <PlaymixesPanel
+              spotifyLinked={signedIn && !!spotifyClientId}
+              tidalLinked={tidalSignedIn && !!tidalClientId}
+              soundcloudLinked={soundcloudSignedIn && !!soundcloudClientId}
+              playlists={playmixPlaylists}
+              onPersist={setPlaymixPlaylists}
+              onSearchQuery={runPlaymixSearch}
+              onPlay={(pl, i) => void playPlaymixFromIndex(pl, i)}
+              playing={
+                playmixSession
+                  ? { playmixId: playmixSession.playmixId, index: playmixSession.index }
+                  : null
+              }
+              spotifyNowPlayingUri={spotifyNowPlayingUri}
+              soundcloudNowPlayingTrackId={soundcloudDeck?.trackId ?? null}
+              busy={busy}
+              setErr={setErr}
+            />
+          ) : inPlaylistDetail ? (
             <>
               <nav className="playlist-view-nav" aria-label="Playlist">
                 <button
@@ -1667,17 +2102,32 @@ export default function App() {
                 {selectedSpotifyId && tracks.length > 0 ? (
                   <>
                     {spotifyFilteredTrackEntries.length > 0 ? (
-                      <ol className="track-list">
+                      <ol className="track-list" data-service="spotify">
                         {spotifyFilteredTrackEntries.map(({ row, indexInPlaylist }) => {
                           const t = row.track ?? row.item
+                          const rowUri = trackUri(row)
+                          const isNowPlaying =
+                            spotifyNowPlayingUri != null &&
+                            rowUri != null &&
+                            spotifyNowPlayingUri === rowUri
                           return (
                             <li key={`${t?.uri ?? t?.id ?? indexInPlaylist}`}>
                               <button
                                 type="button"
                                 className="track-list__row"
+                                aria-current={isNowPlaying ? "true" : undefined}
                                 onClick={() => void handlePlayTrack(row)}
                               >
-                                <span className="track-list__idx">{indexInPlaylist + 1}</span>
+                                <span className="track-list__idx">
+                                  {isNowPlaying ? (
+                                    <span
+                                      className="track-list__playing-dot"
+                                      title="Now playing"
+                                      aria-hidden
+                                    />
+                                  ) : null}
+                                  {indexInPlaylist + 1}
+                                </span>
                                 <span className="track-list__main">
                                   <span className="track-list__title">{trackRowTitle(row)}</span>
                                   <span className="track-list__artists">{trackRowArtists(row)}</span>
@@ -1733,15 +2183,29 @@ export default function App() {
                 {selectedSoundcloud && soundcloudDetailTracks.length > 0 ? (
                   <>
                     {soundcloudFilteredTrackEntries.length > 0 ? (
-                      <ol className="track-list">
-                        {soundcloudFilteredTrackEntries.map(({ row, indexInPlaylist }) => (
+                      <ol className="track-list" data-service="soundcloud">
+                        {soundcloudFilteredTrackEntries.map(({ row, indexInPlaylist }) => {
+                          const isNowPlaying =
+                            soundcloudDeck?.trackId != null &&
+                            soundcloudDeck.trackId === row.id
+                          return (
                           <li key={`${row.id}:${indexInPlaylist}`}>
                             <button
                               type="button"
                               className="track-list__row"
+                              aria-current={isNowPlaying ? "true" : undefined}
                               onClick={() => void loadAndPlaySoundcloudAtIndex(soundcloudDetailTracks, indexInPlaylist)}
                             >
-                              <span className="track-list__idx">{indexInPlaylist + 1}</span>
+                              <span className="track-list__idx">
+                                {isNowPlaying ? (
+                                  <span
+                                    className="track-list__playing-dot"
+                                    title="Now playing"
+                                    aria-hidden
+                                  />
+                                ) : null}
+                                {indexInPlaylist + 1}
+                              </span>
                               <span className="track-list__main">
                                 <span className="track-list__title">{row.title}</span>
                                 <span className="track-list__artists">{row.artistLine}</span>
@@ -1753,7 +2217,8 @@ export default function App() {
                               ) : null}
                             </button>
                           </li>
-                        ))}
+                          )
+                        })}
                       </ol>
                     ) : playlistDetailTrackSearch.trim() ? (
                       <p className="muted playlist-search-empty">No tracks match your search.</p>
@@ -1938,6 +2403,8 @@ export default function App() {
           onSoundcloudPlayPause={() => void handleSoundcloudPlayPauseBar()}
           onSoundcloudPrevious={() => handleSoundcloudPreviousBar()}
           onSoundcloudNext={() => handleSoundcloudNextBar()}
+          onSoundcloudShuffle={() => handleSoundcloudShuffleBar()}
+          onSoundcloudRepeatCycle={() => handleSoundcloudRepeatCycleBar()}
           onSoundcloudSeek={(ms) => handleSoundcloudSeekBar(ms)}
         />,
         document.body,

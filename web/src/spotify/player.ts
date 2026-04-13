@@ -2,6 +2,18 @@ import { SPOTIFY_API } from "./constants"
 
 export type SpotifyRepeatState = "off" | "context" | "track"
 
+/**
+ * Order for the in-app repeat control: off → repeat whole context/queue → repeat one track → off.
+ * Matches Spotify Connect; SoundCloud uses the same states for its local queue.
+ */
+export const REPEAT_CONTROL_CYCLE: readonly SpotifyRepeatState[] = ["off", "context", "track"]
+
+export function nextRepeatModeInControlCycle(current: SpotifyRepeatState): SpotifyRepeatState {
+  const i = REPEAT_CONTROL_CYCLE.indexOf(current)
+  const idx = i >= 0 ? i : 0
+  return REPEAT_CONTROL_CYCLE[(idx + 1) % REPEAT_CONTROL_CYCLE.length]
+}
+
 export interface SpotifyPlaybackState {
   isPlaying: boolean
   progressMs: number
@@ -133,6 +145,23 @@ export async function playPlaylistTrack(
       context_uri: `spotify:playlist:${playlistId}`,
       offset: { uri: trackUri },
     }),
+  })
+  if (status === 204 || status === 202) return { ok: true }
+  return { ok: false, status, detail: errorDetail(status, body) }
+}
+
+/** Play explicit track URIs (no playlist context — used for Playmix Spotify rows). */
+export async function playSpotifyTrackUris(
+  accessToken: string,
+  uris: string[],
+): Promise<PlaybackCommandResult> {
+  const clean = uris.map((u) => u.trim()).filter(Boolean)
+  if (clean.length === 0) return { ok: false, status: 400, detail: "No track URIs." }
+  const url = `${SPOTIFY_API}/me/player/play`
+  const { status, body } = await spotifyRequest(accessToken, url, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ uris: clean }),
   })
   if (status === 204 || status === 202) return { ok: true }
   return { ok: false, status, detail: errorDetail(status, body) }

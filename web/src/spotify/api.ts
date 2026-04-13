@@ -261,6 +261,72 @@ export async function fetchMeCountry(accessToken: string): Promise<string | null
   return country
 }
 
+export type SpotifySearchTrackHit = {
+  uri: string
+  name: string
+  artistLine: string
+  durationMs: number | null
+  image: string | null
+}
+
+/** Top track hit for a text query (for Playmix search). */
+export async function searchSpotifyTopTrack(
+  accessToken: string,
+  query: string,
+): Promise<
+  { ok: true; track: SpotifySearchTrackHit } | { ok: false; status: number; detail: string }
+> {
+  const q = query.trim()
+  if (!q) return { ok: false, status: 400, detail: "Empty search query." }
+  const marketParam = "from_token"
+  const url =
+    `${SPOTIFY_API}/search?` +
+    new URLSearchParams({
+      q,
+      type: "track",
+      limit: "1",
+      market: marketParam,
+    }).toString()
+  const r = await jsonRes<{
+    tracks?: {
+      items?: {
+        uri?: string
+        name?: string
+        duration_ms?: number
+        artists?: { name?: string }[]
+        album?: { images?: { url?: string }[] }
+      }[]
+    }
+  }>(accessToken, url)
+  if (!r.ok) {
+    let detail = r.body.slice(0, 400)
+    try {
+      const j = JSON.parse(r.body) as { error?: { message?: string } }
+      if (j.error?.message) detail = j.error.message
+    } catch {
+      /* keep */
+    }
+    return { ok: false, status: r.status, detail }
+  }
+  const item = r.data.tracks?.items?.[0]
+  if (!item) {
+    return { ok: false, status: 404, detail: "No tracks found for that search." }
+  }
+  const uri = item.uri?.trim()
+  const name = item.name?.trim()
+  if (!uri || !name) {
+    return { ok: false, status: 404, detail: "No tracks found for that search." }
+  }
+  const artists = (item.artists ?? []).map((a) => a.name).filter(Boolean).join(", ")
+  const image = item.album?.images?.[0]?.url ?? null
+  const durationMs =
+    typeof item.duration_ms === "number" && item.duration_ms > 0 ? item.duration_ms : null
+  return {
+    ok: true,
+    track: { uri, name, artistLine: artists, durationMs, image },
+  }
+}
+
 export async function fetchPlaylistMeta(
   accessToken: string,
   playlistId: string,

@@ -13,6 +13,8 @@ export type NowPlayingBarModel =
       positionMs: number
       isPlaying: boolean
       loading: boolean
+      shuffle: boolean
+      repeatMode: SpotifyRepeatState
       canNext: boolean
     }
   | { source: "tidal"; title: string; subtitle: string }
@@ -29,6 +31,8 @@ type Props = {
   onSoundcloudPlayPause: () => void
   onSoundcloudPrevious: () => void
   onSoundcloudNext: () => void
+  onSoundcloudShuffle: () => void
+  onSoundcloudRepeatCycle: () => void
   onSoundcloudSeek: (positionMs: number) => void
 }
 
@@ -168,10 +172,22 @@ function formatTime(ms: number): string {
   return `${m}:${r.toString().padStart(2, "0")}`
 }
 
+/** Short label for the repeat icon (current mode). */
 function repeatLabel(state: SpotifyRepeatState): string {
-  if (state === "context") return "Repeat playlist"
-  if (state === "track") return "Repeat one"
+  if (state === "context") return "Repeat playlist / album"
+  if (state === "track") return "Repeat one track"
   return "Repeat off"
+}
+
+/** Tooltip: current mode + what the next click does (off → all → one → off). */
+function repeatButtonTitle(state: SpotifyRepeatState): string {
+  if (state === "off") {
+    return "Repeat off — next: repeat whole playlist, album, or queue (SoundCloud)"
+  }
+  if (state === "context") {
+    return "Repeating playlist / album / queue — next: repeat this track only"
+  }
+  return "Repeating one track — next: turn repeat off"
 }
 
 export function NowPlayingBar({
@@ -186,6 +202,8 @@ export function NowPlayingBar({
   onSoundcloudPlayPause,
   onSoundcloudPrevious,
   onSoundcloudNext,
+  onSoundcloudShuffle,
+  onSoundcloudRepeatCycle,
   onSoundcloudSeek,
 }: Props) {
   const [smoothProgressMs, setSmoothProgressMs] = useState(0)
@@ -214,27 +232,17 @@ export function NowPlayingBar({
     spState?.item?.uri,
   ])
 
+  /** SoundCloud: drive the bar from `positionMs` (App syncs from media + wall-clock fallback). No local extrapolation. */
   useEffect(() => {
     if (!scState) return
-    const p0 = scState.positionMs
-    const dur = scState.durationMs
-    if (!scState.isPlaying || scState.loading) {
-      setSmoothProgressMs(Math.min(p0, dur))
-      return
-    }
-    const t0 = Date.now()
-    const id = window.setInterval(() => {
-      const next = p0 + (Date.now() - t0)
-      setSmoothProgressMs(Math.min(dur, next))
-    }, 450)
-    return () => window.clearInterval(id)
-  }, [
-    scState?.isPlaying,
-    scState?.positionMs,
-    scState?.durationMs,
-    scState?.trackKey,
-    scState?.loading,
-  ])
+    const p =
+      typeof scState.positionMs === "number" && Number.isFinite(scState.positionMs) ? scState.positionMs : 0
+    const dur =
+      typeof scState.durationMs === "number" && Number.isFinite(scState.durationMs) && scState.durationMs > 0
+        ? scState.durationMs
+        : 1
+    setSmoothProgressMs(Math.min(p, dur))
+  }, [scState?.positionMs, scState?.durationMs, scState?.trackKey])
 
   if (!model) return null
 
@@ -337,7 +345,7 @@ export function NowPlayingBar({
                   className="now-playing-bar__tbtn"
                   disabled={busy}
                   aria-label={repeatLabel(model.state.repeatState)}
-                  title={repeatLabel(model.state.repeatState)}
+                  title={repeatButtonTitle(model.state.repeatState)}
                   onClick={onSpotifyRepeatCycle}
                 >
                   <IconRepeat mode={model.state.repeatState} />
@@ -392,6 +400,17 @@ export function NowPlayingBar({
                   type="button"
                   className="now-playing-bar__tbtn"
                   disabled={busy || model.loading}
+                  aria-pressed={model.shuffle}
+                  aria-label={model.shuffle ? "Shuffle on" : "Shuffle off"}
+                  title="Shuffle"
+                  onClick={onSoundcloudShuffle}
+                >
+                  <IconShuffle />
+                </button>
+                <button
+                  type="button"
+                  className="now-playing-bar__tbtn"
+                  disabled={busy || model.loading}
                   aria-label="Previous track"
                   title="Previous"
                   onClick={onSoundcloudPrevious}
@@ -416,6 +435,16 @@ export function NowPlayingBar({
                   onClick={onSoundcloudNext}
                 >
                   <IconSkipForward />
+                </button>
+                <button
+                  type="button"
+                  className="now-playing-bar__tbtn"
+                  disabled={busy || model.loading}
+                  aria-label={repeatLabel(model.repeatMode)}
+                  title={repeatButtonTitle(model.repeatMode)}
+                  onClick={onSoundcloudRepeatCycle}
+                >
+                  <IconRepeat mode={model.repeatMode} />
                 </button>
               </div>
             </div>

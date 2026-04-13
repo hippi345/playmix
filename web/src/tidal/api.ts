@@ -427,3 +427,71 @@ export async function fetchTidalPlaylistItems(
   if (fromItems.ok) return fromItems
   return fromTracks
 }
+
+export type TidalSearchTopTrackResult =
+  | { ok: true; track: TidalTrackRow; artworkUrl: string | null }
+  | { ok: false; status: number; detail: string }
+
+/**
+ * Best-effort top track for Playmix search preview. TIDAL’s Open API search shape varies by app
+ * registration; if this returns 404, enable Search in the TIDAL developer portal or extend the URL list.
+ */
+export async function searchTidalTopTrack(
+  accessToken: string,
+  clientId: string,
+  query: string,
+): Promise<TidalSearchTopTrackResult> {
+  const q = query.trim()
+  if (!q) return { ok: false, status: 400, detail: "Empty search query." }
+  const country = guessCountryCode()
+  const encoded = encodeURIComponent(q)
+
+  const candidates = [
+    `${TIDAL_OPENAPI_BASE}/searchResults/${encoded}/relationships/tracks?countryCode=${encodeURIComponent(country)}&page%5Bsize%5D=3&include=tracks,tracks.artists,tracks.albums`,
+    `${TIDAL_OPENAPI_BASE}/search/results?query=${encoded}&countryCode=${encodeURIComponent(country)}&filter%5Btypes%5D=TRACKS&page%5Bsize%5D=3&include=tracks,tracks.artists,tracks.albums`,
+  ]
+
+  for (const url of candidates) {
+    const pageDoc = await tidalJson(accessToken, url, clientId)
+    if (!pageDoc.ok) continue
+    const { doc } = pageDoc
+    const includedMap = buildIncludedMap(doc.included)
+    const dataArr = doc.data
+    if (!Array.isArray(dataArr) || dataArr.length === 0) continue
+
+    for (const ref of dataArr) {
+      const item = ref as { type?: string; id?: string }
+      const id = item.id?.trim()
+      if (!id) continue
+      const typ = item.type?.trim() || ""
+      const keys = [`${typ}:${id}`, `tracks:${id}`, `items:${id}`]
+      let tr: JsonIncluded | undefined
+      for (const key of keys) {
+        tr = includedMap.get(key)
+        if (tr) break
+      }
+      if (!tr) {
+        for (const [, v] of includedMap) {
+          if (v.id === id && /track/i.test(String(v.type ?? ""))) {
+            tr = v
+            break
+          }
+        }
+      }
+      if (!tr) continue
+      const resolved = dereferenceToTrackResource(tr, includedMap, 0) ?? tr
+      const row = parseTidalTrackRow(resolved, includedMap)
+      if (row) {
+        const artworkUrl = firstAlbumCoverForTrack(resolved, includedMap)
+        return { ok: true, track: row, artworkUrl }
+      }
+    }
+  }
+
+  return {
+    ok: false,
+    status: 404,
+    detail:
+      "No TIDAL match (search endpoint may differ for your app). You can still preview results once the Search API is enabled.",
+  }
+}
